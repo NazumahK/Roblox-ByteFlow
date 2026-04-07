@@ -1,0 +1,21 @@
+--!strict
+--!optimize 2
+
+local Types = require(script.Parent.Parent.Types)
+
+type DataType<T> = Types.DataType<T>
+
+--[=[
+	DataType representing no payload. Write/read are no-ops.
+	Use `nothing` for packets that only signal an event with no associated data.
+]=]
+local nothing: DataType<boolean> = table.freeze({
+	__T = nil :: any,
+	write = function(_value: boolean) end,
+	read = function(_b: buffer, _cursor: number): (boolean, number)
+		return true, 0
+	end,
+	length = 0,
+})
+
+return nothing
