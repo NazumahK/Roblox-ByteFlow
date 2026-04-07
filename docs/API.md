@@ -105,32 +105,74 @@ end)
 
 ## Data Types Reference
 
-ByteFlow supports a complete suite of serializable primitives and composite wrappers.
+ByteFlow supports a complete suite of serializable primitives and composite wrappers. Choosing the correct type is critical for minimizing bandwidth.
 
-### Standard
-- `uint8`, `uint16`, `uint32`: Unsigned integers (1, 2, 4 bytes).
-- `int8`, `int16`, `int32`: Signed integers.
-- `float32`, `float64`: Floating-point numbers.
-- `bool`, `string`: Primitives.
-- `buff`: Raw Luau `buffer` serialization.
+### Numeric Primitives
 
-### Roblox
-- `inst`: Reliable `Instance` reference.
-- `vec2`, `vec3`, `cframe`: Geometric types.
-- `color3`, `brickColor`: Visual types.
-- `udim`, `udim2`, `rect`: UI types.
-- `font`, `tweenInfo`, `pathWaypoint`: Advanced types.
+#### Integers (Discrete)
+- **`uint8`, `uint16`, `uint32`**: Unsigned integers (1, 2, 4 bytes). Use for counts, IDs, or non-negative values.
+- **`int8`, `int16`, `int32`**: Signed integers. Use for values that can be negative.
 
-### Composite Wrappers
-- `struct({ key = type })`: Fixed-key dictionary (Most efficient).
-- `array(type)`: Integer-indexed sequences.
-- `map(kType, vType)`: Dynamic-key dictionary.
-- `optional(type)`: Wraps a value that may be nil.
+#### Floating Point (Continuous)
+- **`float32`**: Standard precision (4 bytes). Sufficient for most game logic (Positions, Health).
+- **`float64`**: High precision (8 bytes). Use for extremely large numbers or precise timestamps.
+
+### Geometric & Roblox Types
+
+- **`inst`**: A reliable reference to a Roblox `Instance`. Ensures the instance exists on the receiver.
+- **`vec2`, `vec3`**: `Vector2` and `Vector3` types (8 and 12 bytes respectively).
+- **`cframe`**: A coordinate frame. Serialized as a position and a compressed rotation (16+ bytes).
+- **`color3`, `color3uint8`**: Standard `Color3` and a more efficient 3-byte variant.
+- **`brickColor`**: Efficient serialization of the `BrickColor` enum.
+
+### UI & Interaction
+
+- **`udim`, `udim2`, `rect`**: Standards for UI layout and dimensions.
+- **`font`, `tweenInfo`**: Used for synchronizing visual properties.
+- **`dateTime`**: Serialized `DateTime` objects for synchronized game clocks.
+
+### Composite Generic Wrappers
+
+These special types allow you to define complex, nested data structures.
+
+#### `ByteFlow.struct(descriptor: { [string]: DataType<any> })`
+Serializes a fixed-key dictionary. Highly efficient because keys are **not** transmitted; only the ordered values are.
+```lua
+local profileType = ByteFlow.struct({
+    name = ByteFlow.string,
+    level = ByteFlow.uint32,
+    isAdmin = ByteFlow.bool
+})
+```
+
+#### `ByteFlow.array(dataType: DataType<any>)`
+Serializes a sequence of values of a specific type.
+```lua
+local scoresType = ByteFlow.array(ByteFlow.uint32)
+```
+
+#### `ByteFlow.map(keyType: DataType<any>, valueType: DataType<any>)`
+Serializes a dynamic dictionary. Use this only when keys are variable; otherwise, `struct` is faster.
+```lua
+local metadataType = ByteFlow.map(ByteFlow.string, ByteFlow.uint32)
+```
+
+#### `ByteFlow.optional(dataType: DataType<any>)`
+Wraps a value that may be `nil`. Uses exactly 1 byte for the nil-check flag.
+```lua
+local nicknameType = ByteFlow.optional(ByteFlow.string)
+```
+
+#### `ByteFlow.enum(enumItem: Enum)`
+Serializes any Roblox `Enum` value efficiently as a numeric index.
+```lua
+local stateType = ByteFlow.enum(Enum.HumanoidStateType)
+```
 
 ---
 
-## Summary
+## Best Practices
 
-- **Single Frame Batching**: All `send()` calls aggregate into a single frame buffer.
-- **Strict Contracts**: Ensure shared modules are identical between server and client.
-- **Invoke Responsibility**: Always implement `onInvoke` for both server and client to prevent timeouts.
+- **Prefer Structs over Maps**: Maps transmit keys as strings/data, whereas Structs transmit zero key data.
+- **Use the Smallest Integer**: If a value never exceeds 255, use `uint8` instead of `uint32` to save 3 bytes per fire.
+- **Reliability Choice**: Use `Unreliable` for data that changes every frame (like positions) to avoid network congestion.
