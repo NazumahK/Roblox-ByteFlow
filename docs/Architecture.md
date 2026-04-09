@@ -1,74 +1,33 @@
 # Technical Architecture
 
-This document provides a detailed breakdown of the internal implementation and optimizations of the ByteFlow networking library.
+This document details the internal design and performance optimizations of the ByteFlow engine (v2.1.0).
 
-## 1. Frame Aggregation: Batching Logic
+## 1. Loop Efficiency: The Dirty Flag System
 
-Unlike standard `RemoteEvent` fires that incur overhead for every call, ByteFlow utilizes a frame-level aggregation strategy.
+Traditional networking engines often iterate over every connected player during the `Heartbeat` cycle to flush pending buffers. This leads to an $O(N)$ CPU cost relative to the player count.
 
-- **Aggregation Phase**: Every `:send()`, `:sendTo()`, or `:invoke()` call writes to an environment-specific `ChannelState` buffer.
-- **Flush Phase**: On every `Heartbeat`, ByteFlow dumps the aggregated buffers into single `RemoteEvent` fires.
-- **Efficiency**: This minimizes the number of actual network transmissions, significantly reducing the overhead on the Roblox engine's task scheduler.
+ByteFlow eliminates this bottleneck by maintaining **Dirty Sets** for both Reliable and Unreliable channels. If a player state is mutated during a frame, the player is marked as "dirty." The flush loop then only iterates over this set, resulting in an $O(N_{active\_players})$ complexity.
 
-## 2. Resource Management: Coroutine Pooling
+## 2. Memory Management: Geometric Buffer Expansion
 
-To eliminate the cost of thread allocation and garbage collection, the library implements a module-level coroutine reuse pool (`freeThreads`).
+To minimize the high cost of memory reallocations in Luau, ByteFlow employs a geometric growth strategy for its internal buffers. When a buffer's capacity is reached, its size is doubled rather than incrementally increased. 
 
-- **Reuse Cycle**: After a packet handler completes, the thread yields back to the pool instead of terminating.
-- **Performance**: High-frequency network events (e.g., weapon firing or physical synchronization) benefit from zero thread allocation overhead.
+Furthermore, the `ensureCapacity` mechanism pre-calculates the required space for complex structures, ensuring that only a single allocation (or copy) occurs even when writing deeply nested data.
 
-```lua
--- Conceptual Coroutine Reuse
-local function yielder()
-    while true do
-        local fn, data, sender = coroutine.yield()
-        fn(data, sender)
-        table.insert(freeThreads, coroutine.running())
-    end
-end
-```
+## 3. Transactional Integrity
 
-## 3. Serialization Efficiency: Deterministic ID Mapping
+ByteFlow v2.1.0 introduces **Transactional Packet Writing**. Unlike other buffer-based libraries where a serialization error might leave the buffer cursor at an offset position (corrupting the entire stream), ByteFlow records the starting cursor before each write.
 
-ByteFlow eliminates the need for manual ID management by using alphabetical sorting for all network contracts within a namespace.
+If the `DataType.write` method throws an error (e.g., trying to write an incorrect Luau type to a specific binary field), the engine catches the error, restores the cursor to its previous position, and issues a warning. This ensures the packet stream remains synchronized and valid for all subsequent writes in the same frame.
 
-1. `defineNamespace` iterates through all definitions.
-2. Keys are sorted alphabetically.
-3. IDs are assigned sequentially starting from 0.
-4. **Conclusion**: As long as server and client scripts share the same factory function, they will always remain in sync without dynamic negotiation or manual ID overhead.
+## 4. Stability: Defensive Pre-Processing
 
-## 4. Binary Layout: Minimal Overhead
+Before any payload is processed:
+1.  **Size Validation**: Payloads exceeding the `MAX_INCOMING_SIZE` (64KB default) are dropped immediately.
+2.  **Referential Bounds**: Reference maps (Instances) are capped to prevent memory exhaustion via reference spam.
+3.  **Range Validation**: The reader ensures that the packet ID and header can be safely read before even attempting to look up the reader function.
+4.  **Error Isolation**: Deserialization is wrapped in `pcall`. A malformed packet from a client will only result in that specific packet being skipped, without interrupting the rest of the frame's processing.
 
-ByteFlow minimizes bandwidth consumption by using a compact binary representation for every packet.
+## 5. Automated Bit-Level Optimization
 
-### Standard Packet
-- **Byte 0**: `uint8` Packet ID.
-- **Bytes 1+**: Compressed payload.
-
-### Invoke Packet
-- **Byte 0**: `uint8` Packet ID.
-- **Bytes 1-4**: `uint32` Correlation ID (Matches responses back to the original request thread).
-- **Bytes 5+**: Compressed payload.
-
-## 5. State Management: Zero-Overhead Scoping
-
-The serialization module uses a state-swapping pattern to achieve peak write performance without passing state objects as function arguments.
-
-```lua
--- Conceptual State Swapping
-local active: State
-
-function setActive(state: State)
-    active = state
-end
-
-function writeByte(val: number)
-    -- Operates directly on the active upvalue
-    buffer.writeu8(active.buff, active.cursor, val)
-    active.cursor += 1
-end
-```
-
-## Summary
-
-The architecture focuses on algorithmic stability ($O(1)$ dispatch) and deterministic resource usage, ensuring that the network layer scales predictably under high load.
+The `Struct` serializer includes a pre-compilation step that generates an optimized execution plan. This plan identifies consecutive boolean types and groups them into bit-fields. At runtime, these are handled via bitwise operations (`bor`, `lshift`) rather than individual byte writes, optimizing both bandwidth and CPU cache locality.
