@@ -14,6 +14,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local ChannelState = require(script.Parent.ChannelState)
 local Reader = require(script.Parent.Reader)
+local Bandwidth = require(script.Parent.Bandwidth)
 local Packet = require(script.Parent.Parent.Packet)
 
 local REMOTE_RELIABLE = "ByteFlowReliable"
@@ -38,12 +39,14 @@ local function start()
 		-- Flush reliable channel
 		local relData, relRefs = ChannelState.flush(Packet._clientReliable)
 		if relData then
+			Bandwidth.recordOut(buffer.len(relData))
 			reliableRemote:FireServer(relData, relRefs)
 		end
 
 		-- Flush unreliable channel
 		local unrelData, unrelRefs = ChannelState.flush(Packet._clientUnreliable)
 		if unrelData then
+			Bandwidth.recordOut(buffer.len(unrelData))
 			unreliableRemote:FireServer(unrelData, unrelRefs)
 		end
 	end)

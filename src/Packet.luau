@@ -18,9 +18,14 @@ local RunService = game:GetService("RunService")
 local Types = require(script.Parent.Types)
 local ChannelState = require(script.Parent.Process.ChannelState)
 local Reader = require(script.Parent.Process.Reader)
+local Middleware = require(script.Parent.Process.Middleware)
+local Bandwidth = require(script.Parent.Process.Bandwidth)
 
 type DataType<T> = Types.DataType<T>
 type Reliability = Types.Reliability
+
+-- Lazy reference to server dirty-flag functions (only used on server)
+local serverProcess: { markDirtyReliable: (Player) -> (), markDirtyUnreliable: (Player) -> () }? = nil
 
 --[=[
 	@type Packet<T>
@@ -63,11 +68,27 @@ local function getPlayerState(store: { [Player]: ChannelState.State }, player: P
 	return state
 end
 
---- Writes a packet header (1-byte ID) + payload into the active channel state.
-local function writePacket(id: number, dataType: DataType<any>, data: any)
-	local offset = ChannelState.allocate(1)
-	buffer.writeu8(ChannelState.getActive().buff, offset, id)
-	dataType.write(data)
+--- Writes a packet header (2-byte ID) + payload into the active channel state.
+--- Applies outgoing middleware and transactional rollback on failure.
+local function writePacket(id: number, dataType: DataType<any>, data: any, player: Player?)
+	if not Middleware.runOutgoing(id, data, player) then
+		return
+	end
+
+	local active = ChannelState.getActive()
+	local startCursor = active.cursor
+
+	-- 1. Allocate space for ID
+	local offset = ChannelState.allocate(2)
+	buffer.writeu16(active.buff, offset, id)
+
+	-- 2. Transactional Write: attempt to write data
+	local ok, err = pcall(dataType.write, data)
+	if not ok then
+		-- ❌ Error occurred! Rollback cursor to ignore this malformed packet
+		active.cursor = startCursor
+		warn(`[ByteFlow] Write failed for packet {id}, rolling back. Error: {err}`)
+	end
 end
 
 --== Packet Factory ==--
@@ -109,8 +130,14 @@ local function definePacket<T>(config: Types.PacketConfig<T>): (id: number) -> P
 			
 			@param callback (data: T, sender: Player?) -> ()
 		]=]
-		function packet:listen(callback: (data: T, sender: Player?) -> ())
+		function packet:listen(callback: (data: T, sender: Player?) -> ()): () -> ()
 			table.insert(listeners, callback :: any)
+			return function()
+				local idx = table.find(listeners, callback :: any)
+				if idx then
+					table.remove(listeners, idx)
+				end
+			end
 		end
 
 		--[=[
@@ -154,7 +181,17 @@ local function definePacket<T>(config: Types.PacketConfig<T>): (id: number) -> P
 					then getPlayerState(serverPlayerReliable, player)
 					else getPlayerState(serverPlayerUnreliable, player)
 				ChannelState.setActive(state)
-				writePacket(id, dataType, data)
+				writePacket(id, dataType, data, player)
+
+				-- Mark player as dirty so Heartbeat only flushes affected players
+				if not serverProcess then
+					serverProcess = require(script.Parent.Process.Server) :: any
+				end
+				if reliability == "Reliable" then
+					(serverProcess :: any).markDirtyReliable(player)
+				else
+					(serverProcess :: any).markDirtyUnreliable(player)
+				end
 			end
 
 			--[=[

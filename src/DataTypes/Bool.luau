@@ -9,6 +9,7 @@ type DataType<T> = Types.DataType<T>
 
 local bool: DataType<boolean> = table.freeze({
 	__T = nil :: any,
+	_isBool = true,
 	write = function(value: boolean)
 		local offset = ChannelState.allocate(1)
 		buffer.writeu8(ChannelState.getActive().buff, offset, if value then 1 else 0)

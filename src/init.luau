@@ -43,29 +43,30 @@ local DataTypes = require(script.DataTypes)
 local PacketModule = require(script.Packet)
 local InvokeModule = require(script.Invoke)
 local Process = require(script.Process)
+local Middleware = require(script.Process.Middleware)
+local Bandwidth = require(script.Process.Bandwidth)
 
 export type DataType<T> = Types.DataType<T>
 export type Packet<T> = PacketModule.Packet<T>
 export type Invoke<TReq, TRes> = InvokeModule.Invoke<TReq, TRes>
 
---- Global packet ID counter. Shared between packets and invokes.
-local nextPacketId: number = 0
+--- FNV-1a hash over a string → uint16 (0..65535).
+--- Deterministic across server and client: same name = same ID, always.
+local function fnv1a16(str: string): number
+	local h: number = 2166136261 -- FNV offset basis
+	for i = 1, #str do
+		h = bit32.bxor(h, string.byte(str, i))
+		h = bit32.band(h * 16777619, 0xFFFFFFFF) -- FNV prime, wrap to 32-bit
+	end
+	return bit32.band(h, 0xFFFF) -- truncate to 16-bit
+end
 
---[=[
-	@static defineNamespace
-	@within ByteFlow
-	
-	Defines a namespace of packets and invokes with deterministic ID assignment.
-	Keys are sorted alphabetically. Packets consume 1 ID, invokes consume 2 IDs.
-	
-	@param name string -- The name of the namespace.
-	@param factory () -> T -- The factory function returning the definitions.
-	@return T
-]=]
 local function defineNamespace<T>(name: string, factory: () -> T): T
 	local definitions = factory()
-	local sorted: { string } = {}
 
+	-- Sort keys for deterministic iteration order (though IDs are hash-based,
+	-- sorting avoids any subtle issues with duplicate detection below).
+	local sorted: { string } = {}
 	for key in definitions :: any do
 		table.insert(sorted, key)
 	end
@@ -73,21 +74,19 @@ local function defineNamespace<T>(name: string, factory: () -> T): T
 
 	for _, key in sorted do
 		local def = (definitions :: any)[key]
+		local fullName = name .. "/" .. key
 
 		if type(def) == "function" then
 			-- definePacket factory: function(id) -> Packet<T>
-			(definitions :: any)[key] = def(nextPacketId)
-			nextPacketId += 1
+			local id = fnv1a16(fullName)
+			;(definitions :: any)[key] = def(id)
 		elseif type(def) == "table" and (def :: any)._byteFlowType == "invoke" then
-			-- defineInvoke definition: { _byteFlowType, _create(reqId, resId) -> Invoke }
-			(definitions :: any)[key] = (def :: any)._create(nextPacketId, nextPacketId + 1)
-			nextPacketId += 2
+			-- defineInvoke: uses two IDs, one for request and one for response
+			local reqId = fnv1a16(fullName .. "_req")
+			local resId = fnv1a16(fullName .. "_res")
+			;(definitions :: any)[key] = (def :: any)._create(reqId, resId)
 		else
 			error(`[ByteFlow] Namespace "{name}": key "{key}" is not a definePacket() or defineInvoke() result`)
-		end
-
-		if nextPacketId > 255 then
-			error("[ByteFlow] Maximum 256 packet IDs exceeded (uint8 limit).")
 		end
 	end
 
@@ -167,4 +166,8 @@ return table.freeze({
 	array = DataTypes.array,
 	map = DataTypes.map,
 	struct = DataTypes.struct,
+
+	-- Middleware & Monitoring
+	middleware = Middleware,
+	bandwidth = Bandwidth,
 })

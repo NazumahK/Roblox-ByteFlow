@@ -22,6 +22,22 @@ local Packet = require(script.Parent.Packet)
 type DataType<T> = Types.DataType<T>
 type Reliability = Types.Reliability
 
+-- Lazy reference to server dirty-flag functions (only used on server)
+local serverProcess: { markDirtyReliable: (Player) -> (), markDirtyUnreliable: (Player) -> () }? = nil
+
+local function markPlayerDirty(player: Player?, reliability: Reliability)
+	if player then
+		if not serverProcess then
+			serverProcess = require(script.Parent.Process.Server) :: any
+		end
+		if reliability == "Reliable" then
+			(serverProcess :: any).markDirtyReliable(player)
+		else
+			(serverProcess :: any).markDirtyUnreliable(player)
+		end
+	end
+end
+
 --[=[
 	@type Invoke<TReq, TRes>
 	@within Invoke
@@ -55,10 +71,10 @@ local function getWriteState(reliability: Reliability, player: Player?): Channel
 end
 
 local function writeInvokePacket(packetId: number, reqId: number, dataType: DataType<any>, data: any)
-	local offset = ChannelState.allocate(5)
+	local offset = ChannelState.allocate(6)
 	local b = ChannelState.getActive().buff
-	buffer.writeu8(b, offset, packetId)
-	buffer.writeu32(b, offset + 1, reqId)
+	buffer.writeu16(b, offset, packetId)
+	buffer.writeu32(b, offset + 2, reqId)
 	dataType.write(data)
 end
 
@@ -115,6 +131,7 @@ local function defineInvoke<TReq, TRes>(config: Types.InvokeConfig<TReq, TRes>)
 					local state = getWriteState(reliability, sender)
 					ChannelState.setActive(state)
 					writeInvokePacket(responseId, env._reqId, responseType, result)
+					markPlayerDirty(sender, reliability)
 				else
 					warn(`[ByteFlow] No handler registered for invoke (requestId={requestId})`)
 				end
@@ -160,6 +177,7 @@ local function defineInvoke<TReq, TRes>(config: Types.InvokeConfig<TReq, TRes>)
 
 				ChannelState.setActive(state)
 				writeInvokePacket(requestId, reqId, requestType, data)
+				markPlayerDirty(player, reliability)
 
 				local currentThread = coroutine.running()
 				pendingRequests[reqId] = currentThread
