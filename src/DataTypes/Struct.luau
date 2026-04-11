@@ -91,7 +91,7 @@ local function struct<T>(descriptor: { [string]: any }): DataType<T>
 					local packed = 0
 					for b = 1, #bitKeys do
 						if value[bitKeys[b]] then
-							packed = bit.bor(packed, bit.lshift(1, b - 1))
+							packed = bit32.bor(packed, bit32.lshift(1, b - 1))
 						end
 					end
 					local offset = ChannelState.allocate(1)
@@ -111,8 +111,8 @@ local function struct<T>(descriptor: { [string]: any }): DataType<T>
 					local bitKeys = op.bitKeys :: { string }
 					local packed = buffer.readu8(b, cursor + totalRead)
 					totalRead += 1
-					for b = 1, #bitKeys do
-						result[bitKeys[b]] = bit.band(packed, bit.lshift(1, b - 1)) ~= 0
+					for v = 1, #bitKeys do
+						result[bitKeys[v]] = bit32.band(packed, bit32.lshift(1, v - 1)) ~= 0
 					end
 				else
 					local v, bytesRead = (op.dt :: any).read(b, cursor + totalRead, refMap)
