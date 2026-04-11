@@ -82,10 +82,10 @@ local function writePacket(id: number, dataType: DataType<any>, data: any, playe
 	local offset = ChannelState.allocate(2)
 	buffer.writeu16(active.buff, offset, id)
 
-	-- 2. Transactional Write: attempt to write data
-	local ok, err = pcall(dataType.write, data)
+	local ok, err = pcall(function()
+		dataType.write(data)
+	end)
 	if not ok then
-		-- ❌ Error occurred! Rollback cursor to ignore this malformed packet
 		active.cursor = startCursor
 		warn(`[ByteFlow] Write failed for packet {id}, rolling back. Error: {err}`)
 	end
